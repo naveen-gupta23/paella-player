@@ -1,0 +1,193 @@
+import { i18n } from "i18next";
+import { MutableRefObject, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { bug } from "@opencast/appkit";
+
+import CONFIG, { TranslatedString } from "../config";
+
+export type TimeUnit = "h" | "m" | "s";
+
+/** Retrieves the key of an ID by stripping the "kind" prefix. */
+export function keyOfId(id: string): string {
+    return id.substring(2);
+}
+
+/**
+ * Create a comparison function for `Array.prototype.sort` comparing whatever
+ * the given key function returns as numbers.
+ */
+export function compareByKey<T>(key: (item: T) => number): (itemA: T, itemB: T) => number {
+    return (itemA, itemB) => key(itemB) - key(itemA);
+}
+
+/** Swap a binary function's arguments. Useful for example for comparison functions. */
+export function swap<T, U, R>(f: (x: T, y: U) => R): (y: U, x: T) => R {
+    return (y, x) => f(x, y);
+}
+
+/**
+ * A safe way to make a character class matching regexp out of a string of characters.
+ * Note that characters that have a meaning inside of a character class are unconditionally escaped,
+ * i.e. `characterClass("a-z")` might not do what you think it does!
+ */
+export function characterClass(characters: string): string {
+    characters = characters.replace(
+        /[\\\]^-]/gu,
+        specialChar => `\\${specialChar}`,
+    );
+    return `[${characters}]`;
+}
+
+/**
+ * Sets the HTML title to the given string (plus base title) on mount, resets
+ * it on unmount. If the given title is `null`, does not do anything on mount.
+ */
+export const useTitle = (title: string | null, noSuffix = false): void => {
+    const siteTitle = useTranslatedConfig(CONFIG.siteTitle);
+    useEffect(() => {
+        if (title !== null) {
+            document.title = noSuffix ? title : `${title} • ${siteTitle}`;
+        }
+
+        // On unmount, we set the title to the base title.
+        return () => {
+            document.title = siteTitle;
+        };
+    });
+};
+
+/** Extracts the string corresponding to the current language from a translated config string. */
+export const useTranslatedConfig = (s: TranslatedString): string => {
+    const { i18n } = useTranslation();
+    return translatedConfig(s, i18n);
+};
+
+/** Extracts the string corresponding to `i18n.resolvedLanguage` from a translated config string. */
+export const translatedConfig = (s: TranslatedString, i18n: i18n): string => {
+    const lang = i18n.resolvedLanguage ?? "en";
+    return (lang in s ? s[lang as keyof TranslatedString] : undefined) ?? s.en;
+};
+
+export const useOnOutsideClick = (
+    ref: MutableRefObject<Node | null>,
+    callback: () => void,
+): void => {
+    useEffect(() => {
+        const handler = (event: MouseEvent) => {
+            const target = event.target;
+            if (ref.current && target instanceof Element && !ref.current.contains(target)) {
+                callback();
+            }
+        };
+
+        document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+    });
+};
+
+/** Helper hook returning a function that, when called, forces a rerender of the component. */
+export const useForceRerender = (): () => void => {
+    const setState = useState({})[1];
+    return () => setState({});
+};
+
+/**
+ * Like `useState`, but also returns a ref object containing that state. This is
+ * useful if the current state needs to be accessed from callbacks that were
+ * created when the state had a different value.
+ */
+export const useRefState = <T, >(
+    initialValue: T,
+): [MutableRefObject<T>, (newValue: T) => void] => {
+    const forceRerender = useForceRerender();
+    const ref = useRef<T>(initialValue);
+    const update = (newValue: T) => {
+        ref.current = newValue;
+        forceRerender();
+    };
+
+    return [ref, update];
+};
+
+/**
+ * Accesses the current value of a ref, signaling an error when it is unbound.
+ * Note: **Don't** use this if you expect the ref to be unbound temporarily.
+ * This is mainly for accessing refs in event handlers for elements
+ * that are guaranteed to be alive as long as the ref itself.
+ */
+export const currentRef = <T>(ref: React.RefObject<T>): T => (
+    ref.current ?? bug("ref unexpectedly unbound")
+);
+
+
+// Some utilities to handle the different lifecycle stages of events and series
+type OpencastEntity = { syncedData: unknown };
+export type SyncedOpencastEntity<T extends OpencastEntity> = T & {
+    syncedData: NonNullable<T["syncedData"]>;
+};
+export const isSynced = <T extends OpencastEntity>(e: T): e is SyncedOpencastEntity<T> => (
+    Boolean(e.syncedData)
+);
+
+/**
+ * Adds `<meta name="robots" content="noindex">` to the document `<head>` and
+ * removes it when the calling component gets unmounted. Does nothing if
+ * `false` is passed as argument.
+ */
+export const useNoindexTag = (noindex = true) => {
+    useEffect(() => {
+        if (!noindex) {
+            return () => {};
+        }
+
+        const tag = document.createElement("meta");
+        tag.setAttribute("name", "robots");
+        tag.setAttribute("content", "noindex");
+        document.head.appendChild(tag);
+
+        return () => {
+            document.head.removeChild(tag);
+        };
+    });
+};
+
+/** Formats the given number of milliseconds as ISO 8601 duration string, e.g. "PT3M47S" */
+export const toIsoDuration = (milliseconds: number): string => {
+    let acc = Math.floor(milliseconds / 1000);
+    const seconds = acc % 60;
+    acc = Math.floor(acc / 60);
+    const minutes = acc % 60;
+    acc = Math.floor(acc / 60);
+    const hours = acc;
+
+    return `PT${hours}H${minutes}M${seconds}S`;
+};
+
+export const isExperimentalFlagSet = () => (
+    window.localStorage.getItem("tobiraExperimentalFeatures") === "true"
+);
+
+export const timeStringToSeconds = (timeString: string): number => {
+    const timeSplit = /((\d+)h)?((\d+)m)?((\d+)s)?/.exec(timeString);
+    const hours = timeSplit && timeSplit[2] ? parseInt(timeSplit[2]) * 60 * 60 : 0;
+    const minutes = timeSplit && timeSplit[4] ? parseInt(timeSplit[4]) * 60 : 0;
+    const seconds = timeSplit && timeSplit[6] ? parseInt(timeSplit[6]) : 0;
+
+    return hours + minutes + seconds;
+};
+
+/**
+ * Formats the given number of seconds as string containing hours, minutes and seconds,
+ * e.g. "0h2m4s".
+ */
+export const secondsToTimeString = (seconds: number): string => {
+    const formatTime = (time: number, unit: TimeUnit): string =>
+        time > 0 ? time.toString().padStart(2, "0") + unit : "";
+
+    const hours = formatTime(Math.floor(seconds / 3600), "h");
+    const minutes = formatTime(Math.floor((seconds % 3600) / 60), "m");
+    const remainingSeconds = formatTime(Math.floor(seconds % 60), "s");
+
+    return hours + minutes + remainingSeconds;
+};
+
